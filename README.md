@@ -22,9 +22,6 @@ Continuous monitoring of patients in hospitals is required to detect abnormal he
 - RTOS: CMSIS-RTOS  
 - Development Tool: Keil µVision  
 - Components: 16x2 LCD, IR Sensors (2), Buzzer, LED
-## 🎥 Project Demo
-
-[Watch / Download Demo Video](https://raw.githubusercontent.com/KeertiAM29/RTOS-Based-Health-Monitoring-System-LPC1768/main/working%20video.mp4)
 
  
 
