@@ -1,0 +1,182 @@
+#include "LPC17xx.h"
+#include "cmsis_os.h"
+#include <stdio.h>
+
+/* ================= LCD ================= */
+#define RS (1<<25)
+#define RW (1<<26)
+#define EN (1<<28)
+#define LCD_DATA_MASK 0x00F00000
+
+/* ================= IR SENSORS ================= */
+#define IR_BED1 (1<<26)   // P0.26
+#define IR_BED2 (1<<25)   // P0.25
+
+/* ================= BUZZER & LED ================= */
+#define BUZZER_PIN (1<<22)   // P0.22
+#define LED_PIN    (1<<18)   // P1.18
+
+/* ================= GLOBAL FLAGS ================= */
+volatile int bed1_fall = 0;
+volatile int bed2_fall = 0;
+volatile int lcd_locked = 0;   // <<< FIX
+
+/* ================= DELAY ================= */
+void delay_us(unsigned int us){
+    unsigned int i;
+    while(us--) for(i=0;i<40;i++);
+}
+void delay_ms(unsigned int ms){
+    while(ms--) delay_us(1000);
+}
+
+/* ================= LCD ================= */
+void LCD_Enable(void){
+    LPC_GPIO4->FIOSET = EN;
+    delay_us(50);
+    LPC_GPIO4->FIOCLR = EN;
+}
+void LCD_SendNibble(unsigned char n){
+    LPC_GPIO1->FIOCLR = LCD_DATA_MASK;
+    LPC_GPIO1->FIOSET = (n & 0x0F) << 20;
+    LCD_Enable();
+}
+void LCD_Command(unsigned char c){
+    LPC_GPIO3->FIOCLR = RS | RW;
+    LCD_SendNibble(c >> 4);
+    LCD_SendNibble(c);
+    delay_ms(2);
+}
+void LCD_Data(unsigned char d){
+    LPC_GPIO3->FIOSET = RS;
+    LPC_GPIO3->FIOCLR = RW;
+    LCD_SendNibble(d >> 4);
+    LCD_SendNibble(d);
+}
+void LCD_Print(const char *s){
+    while(*s) LCD_Data(*s++);
+}
+void LCD_Clear(void){
+    LCD_Command(0x01);
+    delay_ms(2);
+}
+void LCD_Init(void){
+    LPC_GPIO1->FIODIR |= LCD_DATA_MASK;
+    LPC_GPIO3->FIODIR |= RS | RW;
+    LPC_GPIO4->FIODIR |= EN;
+
+    delay_ms(40);
+    LCD_SendNibble(0x03); delay_ms(5);
+    LCD_SendNibble(0x03); delay_ms(5);
+    LCD_SendNibble(0x03); delay_ms(5);
+    LCD_SendNibble(0x02);
+
+    LCD_Command(0x28);
+    LCD_Command(0x0C);
+    LCD_Command(0x06);
+    LCD_Clear();
+}
+
+/* ================= IR TASK ================= */
+void IR_Task(void const *arg){
+    int c1=0, c2=0;
+
+    while(1){
+        if(LPC_GPIO0->FIOPIN & IR_BED1){ c1=0; bed1_fall=0; }
+        else if(++c1>50) bed1_fall=1;
+
+        if(LPC_GPIO0->FIOPIN & IR_BED2){ c2=0; bed2_fall=0; }
+        else if(++c2>50) bed2_fall=1;
+
+        osDelay(200);
+    }
+}
+
+/* ================= BPM TASK ================= */
+void BPM_Task(void const *arg){
+    int bpm = 72;
+    int dir = -1;
+    char line[16];
+
+    while(1){
+        bpm += dir;
+
+        if(bpm <= 60) dir = 1;
+        if(bpm >= 100) dir = -1;
+
+        if(bpm < 65 || bpm > 95)
+            LPC_GPIO1->FIOSET = LED_PIN;
+        else
+            LPC_GPIO1->FIOCLR = LED_PIN;
+
+        /* <<< FIX: LCD only when not locked */
+        if(!bed1_fall && !bed2_fall && !lcd_locked){
+            LCD_Clear();
+            LCD_Command(0x80);
+            sprintf(line,"BPM: %d", bpm);
+            LCD_Print(line);
+
+            if(bpm < 65)      LCD_Print(" LOW");
+            else if(bpm > 95) LCD_Print(" HIGH");
+            else              LCD_Print(" NORMAL");
+        }
+
+        osDelay(1500);
+    }
+}
+
+/* ================= ALERT TASK ================= */
+void ALERT_Task(void const *arg){
+    while(1){
+        if(bed1_fall || bed2_fall){
+            lcd_locked = 1;               // <<< FIX
+            LPC_GPIO0->FIOSET = BUZZER_PIN;
+            LCD_Clear();
+            LCD_Command(0x80);
+
+            if(bed1_fall && bed2_fall) LCD_Print("BOTH BEDS FALL");
+            else if(bed1_fall)         LCD_Print("BED 1 FALL");
+            else                       LCD_Print("BED 2 FALL");
+        } else {
+            lcd_locked = 0;               // <<< FIX
+            LPC_GPIO0->FIOCLR = BUZZER_PIN;
+        }
+        osDelay(500);
+    }
+}
+
+/* ================= RTOS ================= */
+osThreadDef(IR_Task,    osPriorityAboveNormal, 1, 0);
+osThreadDef(BPM_Task,   osPriorityNormal,      1, 0);
+osThreadDef(ALERT_Task, osPriorityHigh,        1, 0);
+
+/* ================= MAIN ================= */
+int main(void){
+    SystemInit();
+
+    LPC_GPIO0->FIODIR &= ~(IR_BED1 | IR_BED2);
+    LPC_GPIO0->FIODIR |= BUZZER_PIN;
+    LPC_GPIO1->FIODIR |= LED_PIN;
+
+    LCD_Init();
+
+    LCD_Command(0x80);
+    LCD_Print("HEALTH MONITOR");
+    LCD_Command(0xC0);
+    LCD_Print("ING SYSTEM");
+    delay_ms(4000);
+
+    /* PLACE FINGER (safe, before RTOS) */
+    LCD_Clear();
+    LCD_Command(0x80);
+    LCD_Print("PLACE FINGER");
+    delay_ms(3000);
+
+    osKernelInitialize();
+    osThreadCreate(osThread(IR_Task), NULL);
+    osThreadCreate(osThread(BPM_Task), NULL);
+    osThreadCreate(osThread(ALERT_Task), NULL);
+    osKernelStart();
+
+    while(1);
+}
