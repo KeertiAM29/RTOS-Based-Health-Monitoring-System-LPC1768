@@ -23,6 +23,9 @@ Continuous monitoring of patients in hospitals is required to detect abnormal he
 - Development Tool: Keil µVision  
 - Components: 16x2 LCD, IR Sensors (2), Buzzer, LED
 
+## Demo Video 
+- https://youtube.com/shorts/ooMqhKf7cJ8
+
  
 
 ## ⚙️ RTOS Implementation
